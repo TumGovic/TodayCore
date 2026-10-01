@@ -18,27 +18,21 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"io"
-	mRand "math/rand"
 	"net"
-	"net/http"
 	"reflect"
-	"strings"
 	"time"
 	"unsafe"
 
-	"github.com/sagernet/sing-box/adapter"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common/debug"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
-	"github.com/sagernet/sing/common/ntp"
 	aTLS "github.com/sagernet/sing/common/tls"
 
+	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
 	utls "github.com/metacubex/utls"
 	"golang.org/x/crypto/hkdf"
-	"golang.org/x/net/http2"
 )
 
 var _ ConfigCompat = (*RealityClientConfig)(nil)
@@ -51,10 +45,12 @@ const (
 )
 
 type RealityClientConfig struct {
-	ctx       context.Context
-	uClient   *UTLSClientConfig
-	publicKey []byte
-	shortID   [8]byte
+	ctx           context.Context
+	uClient       *UTLSClientConfig
+	publicKey     []byte
+	shortID       [8]byte
+	mldsa65Verify *mldsa65.PublicKey
+	spider        *realitySpider
 }
 
 func NewRealityClient(ctx context.Context, logger logger.ContextLogger, serverAddress string, options option.OutboundTLSOptions) (Config, error) {
@@ -90,7 +86,31 @@ func newRealityClient(ctx context.Context, logger logger.ContextLogger, serverAd
 		return nil, E.New("invalid short_id")
 	}
 
-	var config Config = &RealityClientConfig{ctx, uClient.(*UTLSClientConfig), publicKey, shortID}
+	var mldsa65Verify *mldsa65.PublicKey
+	if options.Reality.Mldsa65Verify != "" {
+		rawKey, err := base64.RawURLEncoding.DecodeString(options.Reality.Mldsa65Verify)
+		if err != nil || len(rawKey) != mldsa65.PublicKeySize {
+			return nil, E.New("invalid mldsa65_verify")
+		}
+		mldsa65Verify = new(mldsa65.PublicKey)
+		err = mldsa65Verify.UnmarshalBinary(rawKey)
+		if err != nil {
+			return nil, E.Cause(err, "invalid mldsa65_verify")
+		}
+	}
+	spider, err := parseRealitySpider(options.Reality.SpiderX)
+	if err != nil {
+		return nil, err
+	}
+
+	var config Config = &RealityClientConfig{
+		ctx:           ctx,
+		uClient:       uClient.(*UTLSClientConfig),
+		publicKey:     publicKey,
+		shortID:       shortID,
+		mldsa65Verify: mldsa65Verify,
+		spider:        spider,
+	}
 	if options.KernelRx || options.KernelTx {
 		if !C.IsLinux {
 			return nil, E.New("kTLS is only supported on Linux")
@@ -139,7 +159,8 @@ func (e *RealityClientConfig) Client(conn net.Conn) (Conn, error) {
 
 func (e *RealityClientConfig) ClientHandshake(ctx context.Context, conn net.Conn) (aTLS.Conn, error) {
 	verifier := &realityVerifier{
-		serverName: e.uClient.ServerName(),
+		serverName:    e.uClient.ServerName(),
+		mldsa65Verify: e.mldsa65Verify,
 	}
 	uConfig := e.uClient.config.Clone()
 	uConfig.InsecureSkipVerify = true
@@ -234,7 +255,10 @@ func (e *RealityClientConfig) ClientHandshake(ctx context.Context, conn net.Conn
 	}
 	ecdheKey := keyShareKeys.Ecdhe
 	if ecdheKey == nil {
-		return nil, E.New("nil ecdheKey")
+		ecdheKey = keyShareKeys.MlkemEcdhe
+	}
+	if ecdheKey == nil {
+		return nil, E.New("current fingerprint does not support TLS 1.3, REALITY handshake cannot be established")
 	}
 	authKey, err := ecdheKey.ECDH(publicKey)
 	if err != nil {
@@ -267,8 +291,8 @@ func (e *RealityClientConfig) ClientHandshake(ctx context.Context, conn net.Conn
 	}
 
 	if !verifier.verified {
-		go realityClientFallback(e.ctx, uConn, e.uClient.ServerName(), e.uClient.id)
-		return nil, E.New("reality verification failed")
+		e.spider.run(uConn, e.uClient.ServerName())
+		return nil, E.New("reality verification failed: received real certificate (potential MITM or redirection)")
 	}
 
 	return &realityClientConnWrapper{uConn}, nil
@@ -325,44 +349,23 @@ func realityEnsureMLKEMKeyShare(keyShares []utls.KeyShare) []utls.KeyShare {
 	return result
 }
 
-func realityClientFallback(ctx context.Context, uConn net.Conn, serverName string, fingerprint utls.ClientHelloID) {
-	defer uConn.Close()
-	client := &http.Client{
-		Transport: &http2.Transport{
-			DialTLSContext: func(ctx context.Context, network, addr string, config *tls.Config) (net.Conn, error) {
-				return uConn, nil
-			},
-			TLSClientConfig: &tls.Config{
-				Time:    ntp.TimeFuncFromContext(ctx),
-				RootCAs: adapter.RootPoolFromContext(ctx),
-			},
-		},
-	}
-	request, _ := http.NewRequest("GET", "https://"+serverName, nil)
-	request.Header.Set("User-Agent", fingerprint.Client)
-	request.AddCookie(&http.Cookie{Name: "padding", Value: strings.Repeat("0", mRand.Intn(32)+30)})
-	response, err := client.Do(request)
-	if err != nil {
-		return
-	}
-	_, _ = io.Copy(io.Discard, response.Body)
-	response.Body.Close()
-}
-
 func (e *RealityClientConfig) Clone() Config {
 	return &RealityClientConfig{
-		e.ctx,
-		e.uClient.Clone().(*UTLSClientConfig),
-		e.publicKey,
-		e.shortID,
+		ctx:           e.ctx,
+		uClient:       e.uClient.Clone().(*UTLSClientConfig),
+		publicKey:     e.publicKey,
+		shortID:       e.shortID,
+		mldsa65Verify: e.mldsa65Verify,
+		spider:        e.spider,
 	}
 }
 
 type realityVerifier struct {
 	*utls.UConn
-	serverName string
-	authKey    []byte
-	verified   bool
+	serverName    string
+	authKey       []byte
+	mldsa65Verify *mldsa65.PublicKey
+	verified      bool
 }
 
 func (c *realityVerifier) VerifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
@@ -372,8 +375,20 @@ func (c *realityVerifier) VerifyPeerCertificate(rawCerts [][]byte, verifiedChain
 		h := hmac.New(sha512.New, c.authKey)
 		h.Write(pub)
 		if bytes.Equal(h.Sum(nil), certs[0].Signature) {
-			c.verified = true
-			return nil
+			if c.mldsa65Verify == nil {
+				c.verified = true
+				return nil
+			}
+			// Xray: the server signs HMAC(pub || ClientHello || ServerHello)
+			// with ML-DSA-65 and puts the signature in the first extension.
+			if len(certs[0].Extensions) > 0 {
+				h.Write(c.HandshakeState.Hello.Raw)
+				h.Write(c.HandshakeState.ServerHello.Raw)
+				if mldsa65.Verify(c.mldsa65Verify, h.Sum(nil), nil, certs[0].Extensions[0].Value) {
+					c.verified = true
+					return nil
+				}
+			}
 		}
 	}
 	opts := x509.VerifyOptions{

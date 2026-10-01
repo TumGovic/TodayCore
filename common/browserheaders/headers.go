@@ -16,7 +16,7 @@
 // what Xray on the same host would pick; this is not detectable on the wire
 // because real Chrome populations span many versions.
 
-package v2rayxhttp
+package browserheaders
 
 import (
 	"hash/fnv"
@@ -57,7 +57,7 @@ func firefoxVersion() int {
 func curlVersion() string {
 	timeCurrent := time.Now().Unix() / 86400
 	timeStart := time.Date(2023, 3, 20, 0, 0, 0, 0, time.UTC).Unix() / 86400
-	timeDiff := int(timeCurrent - timeStart - 60) - int(math.Floor(math.Pow(globalRng.Float64(), 2)*165))
+	timeDiff := int(timeCurrent-timeStart-60) - int(math.Floor(math.Pow(globalRng.Float64(), 2)*165))
 	minorValue := timeDiff / 57
 	return "8." + strconv.Itoa(minorValue) + ".0"
 }
@@ -255,10 +255,10 @@ func applyMasqueradedHeaders(header http.Header, browser string, variant string)
 	}
 }
 
-// TryDefaultHeadersWith mirrors Xray's utils.TryDefaultHeadersWith.
+// Apply mirrors Xray's utils.TryDefaultHeadersWith.
 // A user-supplied User-Agent of "chrome"/"firefox"/"safari"/"edge"/"curl"/
 // "golang" is a SELECTOR, not a literal value.
-func TryDefaultHeadersWith(header http.Header, variant string) {
+func Apply(header http.Header, variant string) {
 	if len(header.Values("User-Agent")) < 1 {
 		applyMasqueradedHeaders(header, "chrome", variant)
 	} else {

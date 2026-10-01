@@ -3,6 +3,9 @@ package option
 type VLESSInboundOptions struct {
 	ListenOptions
 	Users []VLESSUser `json:"users,omitempty"`
+	// Decryption is Xray's VLESS Encryption server ("mlkem768x25519plus...")
+	// string. Empty or "none" disables it.
+	Decryption string `json:"decryption,omitempty"`
 	InboundTLSOptionsContainer
 	Multiplex *InboundMultiplexOptions `json:"multiplex,omitempty"`
 	Transport *V2RayTransportOptions   `json:"transport,omitempty"`

@@ -41,8 +41,7 @@ func NewServerTransport(ctx context.Context, logger logger.ContextLogger, option
 	case C.V2RayTransportTypeHTTPUpgrade:
 		return v2rayhttpupgrade.NewServer(ctx, logger, options.HTTPUpgradeOptions, tlsConfig, handler)
 	case C.V2RayTransportTypeXHTTP:
-		// Client-side only by design.
-		return nil, E.New("xhttp inbound is not implemented; use xhttp in outbounds only")
+		return v2rayxhttp.NewServer(ctx, logger, options.XHTTPOptions, tlsConfig, handler)
 	default:
 		return nil, E.New("unknown transport type: " + options.Type)
 	}

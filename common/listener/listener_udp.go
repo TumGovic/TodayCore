@@ -27,6 +27,36 @@ func (l *Listener) ListenUDP() (net.PacketConn, error) {
 
 func (l *Listener) ListenUDPWithConfig(listenConfig net.ListenConfig) (net.PacketConn, error) {
 	bindAddr := M.SocksaddrFrom(l.listenOptions.Listen.Build(netip.AddrFrom4([4]byte{127, 0, 0, 1})), l.listenOptions.ListenPort)
+	mask, err := l.loadFinalMask()
+	if err != nil {
+		return nil, err
+	}
+	if mask.HasUDP() {
+		if l.oobPacketHandler != nil {
+			return nil, E.New("finalmask: UDP masks are not supported by this inbound")
+		}
+		l.udpListenConfig = listenConfig
+		packetConn, err := mask.ListenPacket(l.ctx, bindAddr.UDPAddr())
+		if err != nil {
+			return nil, err
+		}
+		l.packetConn = packetConn
+		l.udpAddr = bindAddr
+		l.logger.Info("udp server started at ", packetConn.LocalAddr(), " with finalmask")
+		return packetConn, nil
+	}
+	udpConn, err := l.listenUDPBase(listenConfig, bindAddr)
+	if err != nil {
+		return nil, err
+	}
+	l.udpConn = udpConn.(*net.UDPConn)
+	l.packetConn = udpConn
+	l.udpAddr = bindAddr
+	l.logger.Info("udp server started at ", udpConn.LocalAddr())
+	return udpConn, err
+}
+
+func (l *Listener) listenUDPBase(listenConfig net.ListenConfig, bindAddr M.Socksaddr) (net.PacketConn, error) {
 	if l.listenOptions.BindInterface != "" {
 		listenConfig.Control = control.Append(listenConfig.Control, control.BindToInterface(service.FromContext[adapter.NetworkManager](l.ctx).InterfaceFinder(), l.listenOptions.BindInterface, -1))
 	}
@@ -52,16 +82,9 @@ func (l *Listener) ListenUDPWithConfig(listenConfig net.ListenConfig) (net.Packe
 			})
 		})
 	}
-	udpConn, err := ListenNetworkNamespace[net.PacketConn](l.ctx, l.listenOptions.NetNs, func() (net.PacketConn, error) {
+	return ListenNetworkNamespace[net.PacketConn](l.ctx, l.listenOptions.NetNs, func() (net.PacketConn, error) {
 		return listenConfig.ListenPacket(l.ctx, M.NetworkFromNetAddr(N.NetworkUDP, bindAddr.Addr), bindAddr.String())
 	})
-	if err != nil {
-		return nil, err
-	}
-	l.udpConn = udpConn.(*net.UDPConn)
-	l.udpAddr = bindAddr
-	l.logger.Info("udp server started at ", udpConn.LocalAddr())
-	return udpConn, err
 }
 
 func (l *Listener) DialContext(dialer net.Dialer, ctx context.Context, network string, address string) (net.Conn, error) {
@@ -105,6 +128,10 @@ func (l *Listener) PacketWriter() N.PacketWriter {
 
 func (l *Listener) loopUDPIn() {
 	defer close(l.packetOutboundClosed)
+	if l.udpConn == nil {
+		l.loopMaskedUDPIn()
+		return
+	}
 	if l.oobPacketHandler == nil {
 		if batchHandler, isBatchHandler := l.packetHandler.(adapter.PacketBatchHandler); isBatchHandler {
 			packetConn := sBufio.NewPacketConn(l.udpConn)
@@ -189,8 +216,40 @@ func (l *Listener) loopUDPInBatch(handler adapter.PacketBatchHandler, readWaiter
 	}
 }
 
+// loopMaskedUDPIn reads from a FinalMask packet conn.
+func (l *Listener) loopMaskedUDPIn() {
+	var buffer *buf.Buffer
+	if !l.threadUnsafePacketWriter {
+		buffer = buf.NewPacket()
+		defer buffer.Release()
+		buffer.IncRef()
+		defer buffer.DecRef()
+	}
+	for {
+		if l.threadUnsafePacketWriter {
+			buffer = buf.NewPacket()
+		} else {
+			buffer.Reset()
+		}
+		n, addr, err := l.packetConn.ReadFrom(buffer.FreeBytes())
+		if err != nil {
+			if l.threadUnsafePacketWriter {
+				buffer.Release()
+			}
+			if l.shutdown.Load() && E.IsClosed(err) {
+				return
+			}
+			l.packetConn.Close()
+			l.logger.Error("udp listener closed: ", err)
+			return
+		}
+		buffer.Truncate(n)
+		l.packetHandler.NewPacket(buffer, M.SocksaddrFromNet(addr).Unwrap())
+	}
+}
+
 func (l *Listener) loopUDPOut() {
-	packetConn := sBufio.NewPacketConn(l.udpConn)
+	packetConn := sBufio.NewPacketConn(l.packetConn)
 	batchWriter := sBufio.NewPacketBatchWriter(packetConn)
 	packets := make([]*N.PacketBuffer, 0, udpOutputBatchSize)
 	buffers := make([]*buf.Buffer, 0, udpOutputBatchSize)

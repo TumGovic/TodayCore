@@ -2,84 +2,106 @@
 
 # TodayCore
 
-**TodayCore** is an experimental networking core based on **sing-box 1.15.0-alpha.6**. It keeps the sing-box architecture and configuration model while adding selected, modern client-side features ported from **Xray-core 26.9.9**.
+**TodayCore** is an experimental networking core based on **sing-box 1.15.0-alpha.6**. It keeps the sing-box architecture and configuration format, and adds the modern Xray-core features needed to work with current Xray deployments, as both client and server. The features are ported from **Xray-core 26.9.9 and 26.9.30**.
 
 > [!WARNING]
 > TodayCore is a beta, community-driven project. Do not expect a fixed release schedule, guaranteed compatibility, or production support. Test every update before deploying it.
 
 ## Why TodayCore exists
 
-The project explores interoperability between sing-box and current Xray deployments without turning sing-box into a complete Xray clone. Only relevant modern features are considered; obsolete and legacy protocols are intentionally outside the project scope.
+TodayCore makes sing-box interoperate with current Xray deployments without turning it into a complete Xray clone. Only relevant modern features are considered; obsolete and legacy protocols are intentionally outside the project scope.
 
-The current codebase is identified as **TodayCore**, but its upstream base is **sing-box 1.15.0-alpha.6**.
+## Highlights
+
+- **XHTTP** client and server, in every mode, over HTTP/1.1, HTTP/2 and HTTP/3.
+- **REALITY** compatible with Xray 26.9 servers, including ML-DSA-65 verification and the spider.
+- **VLESS post-quantum encryption** (`mlkem768x25519plus`) for outbounds and inbounds, with XTLS Vision.
+- **FinalMask** with all of Xray's TCP and UDP masks.
+- **Browser dialer**, so XHTTP and WebSocket traffic can be sent by a real browser.
+- **Key generators** compatible with `xray vlessenc` and `xray mldsa65`.
 
 ## Added on top of sing-box
 
-### XHTTP outbound transport
+### XHTTP transport
 
-The Xray SplitHTTP/XHTTP **client transport** was ported from Xray-core 26.9.9.
-
-Implemented:
+The Xray SplitHTTP/XHTTP transport, for outbounds and inbounds:
 
 - `packet-up`, `stream-up`, `stream-one`, and `auto` modes;
-- HTTP/1.1 and HTTP/2 operation;
+- HTTP/1.1, HTTP/2 (TLS and h2c), and HTTP/3 when the TLS ALPN is exactly `["h3"]`;
 - session metadata in path, query, header, or cookie;
 - uplink data in body, header, or cookie;
 - X-Padding, including custom placement, key, header, and obfuscation mode;
 - browser-like default request headers;
 - XMUX connection and request reuse settings;
-- separate `downloadSettings` support;
-- raw HTTP/1.1 keep-alive, upload queue, and split-connection behavior.
+- separate `downloadSettings`;
+- a server that accepts every mode Xray clients may choose.
 
-XHTTP is available only as an **outbound/client transport**.
+### REALITY
 
-### Modern REALITY compatibility
+The REALITY client works with Xray-core 26.9 servers:
 
-The REALITY client was updated for compatibility with Xray-core 26.9.9 servers:
+- sends the `X25519MLKEM768` hybrid key share before plain `X25519`, as modern servers require;
+- reports protocol-compatible client version `26.9.9`, avoiding the `reality verification failed` fallback on servers that require modern clients;
+- `mldsa65_verify`: post-quantum ML-DSA-65 verification of servers configured with `mldsa65Seed`;
+- `spider_x`: Xray's spider, which keeps crawling the target site after receiving a real certificate.
 
-- restores the `X25519MLKEM768` hybrid key share before plain `X25519`;
-- keeps the X25519 key share needed by REALITY authentication;
-- reports protocol-compatible client version `26.9.9` in the REALITY session ID;
-- avoids the common fallback-to-destination failure that appears as `reality verification failed` against servers requiring modern clients.
-
-This behavior is automatic when using REALITY with uTLS.
+The key share and version behavior is automatic when using REALITY with uTLS.
 
 ### VLESS post-quantum encryption
 
-TodayCore contains an experimental client-side port of Xray's VLESS Encryption:
+Xray's VLESS Encryption on outbounds (`encryption`) and inbounds (`decryption`):
 
-- `mlkem768x25519plus`;
-- `native`, `xorpub`, and `random` modes;
-- `1rtt` and `0rtt` handshakes;
+- `mlkem768x25519plus` with `native`, `xorpub`, and `random` modes;
+- `1rtt` and `0rtt` handshakes with ticket lifetimes;
 - padding profiles;
-- 32-byte X25519 and 1184-byte ML-KEM-768 public keys;
-- relay key chains.
+- X25519 and ML-KEM-768 keys, including relay key chains;
+- XTLS Vision (`xtls-rprx-vision`) on top of the encryption layer.
 
-The implementation is currently **client/outbound only** and should be treated as experimental until it receives broader interoperability testing.
+Treat it as experimental until it receives broader interoperability testing.
+
+### FinalMask
+
+All of Xray's FinalMask masks:
+
+- **TCP:** `fragment`, `sudoku`, `header-custom`, `xmc`;
+- **UDP:** `noise`, `salamander` (including Gecko), `sudoku`, `header-custom`, `mkcp-legacy`, `udphop`, `xdns`, `xicmp`, `realm`.
+
+Add a `finalmask` object to an inbound's or outbound's options. It wraps the raw TCP/UDP sockets below TLS and the transport, exactly like Xray's `streamSettings.finalmask`, and uses Xray's field names.
+
+### Browser dialer
+
+Xray's browser dialer for XHTTP and WebSocket outbounds: TodayCore serves a local page, and a browser that keeps it open makes the requests with its own TLS and HTTP fingerprint. Enable it per transport with `browserDialer` (XHTTP) or `browser_dialer` (WebSocket).
+
+### Key generation
+
+```bash
+sing-box generate vlessenc
+```
+
+```bash
+sing-box generate mldsa65-keypair
+```
+
+The first prints matching VLESS `decryption`/`encryption` strings, like `xray vlessenc`. The second prints a REALITY ML-DSA-65 seed for Xray servers and the verify key for clients, like `xray mldsa65`.
 
 ## Porting status
 
 | Xray feature | Status in TodayCore | Notes |
 | --- | --- | --- |
-| XHTTP outbound/client | Ported | HTTP/1.1 and HTTP/2 |
-| XHTTP `packet-up` | Ported | Client side |
-| XHTTP `stream-up` | Ported | Client side |
-| XHTTP `stream-one` | Ported | Client side |
-| XHTTP metadata placement and X-Padding | Ported | Xray-compatible field names |
-| XHTTP XMUX | Ported | Connection/request reuse controls |
+| XHTTP client and server | Ported | All modes; HTTP/1.1, h2, h2c, HTTP/3 |
+| XHTTP metadata placement, X-Padding, XMUX | Ported | Xray-compatible field names |
+| Browser dialer | Ported | XHTTP and WebSocket outbounds |
 | REALITY `X25519MLKEM768` compatibility | Ported | Automatic with supported uTLS fingerprints |
-| VLESS `mlkem768x25519plus` encryption | Experimental | Client/outbound only |
-| XHTTP inbound/server | Not ported | Explicitly rejected by the configuration runtime |
-| XHTTP over HTTP/3 | Not ported | Use `h2` or `http/1.1`; the projects use incompatible QUIC forks |
-| Xray browser dialer | Not ported | No browser-dialer integration |
-| REALITY `mldsa65Verify` | Not ported | Not implemented |
-| REALITY `spiderX` | Not ported | Not implemented |
-| FinalMask | Not ported | Not implemented |
-| VLESS Encryption inbound/server | Not ported | Client-only implementation |
+| REALITY `mldsa65Verify` and `spiderX` | Ported | Client side (`mldsa65_verify`, `spider_x`) |
+| VLESS Encryption | Experimental | Outbound (`encryption`) and inbound (`decryption`) |
+| FinalMask | Ported | All TCP and UDP masks; inbounds and outbounds |
+| REALITY `mldsa65Seed` (server) | Not ported | The sing-box REALITY server cannot sign with ML-DSA-65; use an Xray server |
+
+All ported features were tested against Xray-core 26.9.30 in both directions. A few masks have environmental limits, listed in the extension guide: `xicmp` needs raw sockets, `realm` needs a signalling server, and `xdns` only carries small packets.
 
 ## Configuration
 
-TodayCore continues to use the sing-box JSON configuration format. Documentation and examples for TodayCore-specific additions are available in:
+TodayCore uses the sing-box JSON configuration format. Field names that come from Xray (XHTTP options and FinalMask settings) keep Xray's spelling, so those parts of an Xray config can be reused as they are.
 
 - [TodayCore extensions and configuration examples](docs/todaycore-extensions.md)
 
@@ -111,7 +133,7 @@ A custom build can be requested through the Makefile:
 TAGS="with_quic with_utls" make
 ```
 
-The default build tags and required linker flags are maintained in `release/DEFAULT_BUILD_TAGS*` and `release/LDFLAGS`. Prefer the standard `make` target unless you know which platform-specific features you need.
+The default build tags and required linker flags are maintained in `release/DEFAULT_BUILD_TAGS*` and `release/LDFLAGS`. Prefer the standard `make` target unless you know which platform-specific features you need. XHTTP over HTTP/3 needs `with_quic`, and REALITY needs `with_utls`; both are in the default tags.
 
 ## Development status and contributions
 
@@ -119,7 +141,7 @@ TodayCore is maintained **entirely on a voluntary basis**. Development may pause
 
 If you want the project to stay active, the best way to help is to participate directly:
 
-1. test TodayCore against current Xray servers;
+1. test TodayCore against current Xray servers and clients;
 2. report reproducible compatibility problems;
 3. include logs, server/client versions, and a sanitized configuration;
 4. add tests for protocol and wire-format behavior;
@@ -134,12 +156,12 @@ Please keep pull requests small where possible, explain the upstream behavior be
 TodayCore is derived from:
 
 - [SagerNet/sing-box](https://github.com/SagerNet/sing-box), base version 1.15.0-alpha.6;
-- [XTLS/Xray-core](https://github.com/XTLS/Xray-core), source reference version 26.9.9 for selected ports.
+- [XTLS/Xray-core](https://github.com/XTLS/Xray-core), source reference versions 26.9.9 and 26.9.30 for the ported features.
 
-XHTTP-derived files retain their Xray/MPL attribution. TodayCore modifications remain subject to the repository's GPL-3.0-or-later licensing terms. Review source-file headers and [`LICENSE`](LICENSE) before redistribution.
+Files derived from Xray-core retain their MPL-2.0 attribution; see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). TodayCore modifications remain subject to the repository's GPL-3.0-or-later licensing terms. Review source-file headers and [`LICENSE`](LICENSE) before redistribution.
 
 TodayCore is an independent community project and is not an official SagerNet or XTLS release. The TodayCore name must not be used to imply endorsement by either upstream project.
 
 ## Security
 
-This project handles low-level networking, cryptography, and experimental protocol compatibility. Never assume that a successful build has been security-audited. Avoid publishing private keys, UUIDs, REALITY keys, or complete production configurations in bug reports.
+This project handles low-level networking, cryptography, and experimental protocol compatibility. Never assume that a successful build has been security-audited. Avoid publishing private keys, UUIDs, REALITY keys, VLESS Encryption keys, or complete production configurations in bug reports.

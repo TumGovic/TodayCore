@@ -198,6 +198,8 @@ func (c *DefaultDialerClient) Close() error {
 	if transport, ok := c.client.Transport.(interface{ CloseIdleConnections() }); ok {
 		transport.CloseIdleConnections()
 	}
+	// The HTTP/3 transport owns its QUIC connections.
+	closeIfCloser(c.client.Transport)
 	return nil
 }
 

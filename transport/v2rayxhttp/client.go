@@ -4,13 +4,14 @@
 //
 // Modifications for sing-box are licensed under GPL-3.0-or-later.
 //
-// Client-side XHTTP only. Inbound/server support is intentionally absent.
+// Client side of XHTTP. The server side lives in server.go.
 
 package v2rayxhttp
 
 import (
 	"context"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -21,7 +22,10 @@ import (
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
+	"github.com/sagernet/sing-box/common/browserdialer"
 	"github.com/sagernet/sing-box/common/tls"
+	C "github.com/sagernet/sing-box/constant"
+	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
@@ -56,6 +60,8 @@ type Client struct {
 	access      sync.Mutex
 	xmuxManager *XmuxManager
 
+	browserDialer *browserdialer.Dialer
+
 	// Separate manager for the downlink of stream-up mode, mirroring Xray's
 	// DownloadSettings having its own dialer state.
 	download       *Client
@@ -72,12 +78,17 @@ func NewClient(ctx context.Context, dialer N.Dialer, serverAddr M.Socksaddr, opt
 	if err != nil {
 		return nil, err
 	}
+	err = client.acquireBrowserDialer(options.BrowserDialer)
+	if err != nil {
+		return nil, err
+	}
 	if options.DownloadSettings != nil {
 		if config.Mode == ModeStreamOne {
 			return nil, E.New(`Can not use "downloadSettings" in "stream-one" mode.`)
 		}
 		downloadClient, err := newDownloadClient(ctx, clientLogger, dialer, *options.DownloadSettings)
 		if err != nil {
+			client.Close()
 			return nil, E.Cause(err, "downloadSettings")
 		}
 		client.download = downloadClient
@@ -132,7 +143,28 @@ func newDownloadClient(ctx context.Context, clientLogger logger.ContextLogger, d
 	if err != nil {
 		return nil, err
 	}
-	return newClient(ctx, clientLogger, dialer, serverAddr, config, tlsConfig, true)
+	client, err := newClient(ctx, clientLogger, dialer, serverAddr, config, tlsConfig, true)
+	if err != nil {
+		return nil, err
+	}
+	err = client.acquireBrowserDialer(options.BrowserDialer)
+	if err != nil {
+		return nil, err
+	}
+	return client, nil
+}
+
+func (c *Client) acquireBrowserDialer(address string) error {
+	// Xray never uses the browser dialer together with REALITY.
+	if address == "" || c.reality {
+		return nil
+	}
+	dialer, err := browserdialer.Get(address, log.StdLogger())
+	if err != nil {
+		return err
+	}
+	c.browserDialer = dialer
+	return nil
 }
 
 // isRealityConfig reports whether the TLS client is REALITY.
@@ -147,8 +179,7 @@ func isRealityConfig(tlsConfig tls.Config) bool {
 	return strings.Contains(strings.ToLower(reflect.TypeOf(tlsConfig).String()), "reality")
 }
 
-// decideHTTPVersion follows Xray exactly, except that HTTP/3 is rejected:
-// Xray's H3 path depends on its quic-go fork, which sing-box does not carry.
+// decideHTTPVersion follows Xray exactly. HTTP/3 needs the with_quic build tag.
 func decideHTTPVersion(tlsConfig tls.Config, reality bool) (string, error) {
 	if reality {
 		return "2", nil
@@ -164,15 +195,18 @@ func decideHTTPVersion(tlsConfig tls.Config, reality bool) (string, error) {
 	case "http/1.1":
 		return "1.1", nil
 	case "h3":
-		return "", E.New("XHTTP over HTTP/3 is not supported by sing-box: set tls.alpn to h2 or http/1.1")
+		if !C.WithQUIC {
+			return "", C.ErrQUICNotIncluded
+		}
+		return "3", nil
 	default:
 		return "2", nil
 	}
 }
 
 func (c *Client) MultiplexEnabled() bool {
-	// Only HTTP/2 multiplexes; HTTP/1.1 uses one connection per stream.
-	return c.httpVersion == "2"
+	// Only HTTP/2 and HTTP/3 multiplex; HTTP/1.1 uses one connection per stream.
+	return c.httpVersion == "2" || c.httpVersion == "3"
 }
 
 func (c *Client) scheme() string {
@@ -193,9 +227,19 @@ func (c *Client) hostHeader() string {
 }
 
 func (c *Client) requestURL() url.URL {
+	host := c.hostHeader()
+	if c.browserDialer != nil {
+		// For Browser Dialer's optimized IP and non-standard port
+		if _, _, err := net.SplitHostPort(host); err != nil {
+			scheme := c.scheme()
+			if !(scheme == "http" && c.serverAddr.Port == 80) && !(scheme == "https" && c.serverAddr.Port == 443) {
+				host = net.JoinHostPort(host, strconv.Itoa(int(c.serverAddr.Port)))
+			}
+		}
+	}
 	return url.URL{
 		Scheme:   c.scheme(),
-		Host:     c.hostHeader(),
+		Host:     host,
 		Path:     c.config.GetNormalizedPath(),
 		RawQuery: c.config.GetNormalizedQuery(),
 	}
@@ -230,6 +274,14 @@ func (c *Client) createHTTPClient() *DefaultDialerClient {
 	}
 
 	switch c.httpVersion {
+	case "3":
+		var h3KeepAlivePeriod time.Duration
+		if period := c.config.Xmux.HKeepAlivePeriod; period != 0 {
+			h3KeepAlivePeriod = time.Duration(period) * time.Second
+		}
+		dialerClient.client = &http.Client{
+			Transport: c.newHTTP3Transport(h3KeepAlivePeriod),
+		}
 	case "2":
 		dialerClient.client = &http.Client{
 			Transport: &http2.Transport{
@@ -262,7 +314,13 @@ func (c *Client) createHTTPClient() *DefaultDialerClient {
 	return dialerClient
 }
 
-func (c *Client) getHTTPClient(ctx context.Context) (*DefaultDialerClient, *XmuxClient) {
+func (c *Client) getHTTPClient(ctx context.Context) (DialerClient, *XmuxClient) {
+	if c.browserDialer != nil {
+		browserClient := &BrowserDialerClient{transportConfig: c.config, dialer: c.browserDialer}
+		xmuxClient := &XmuxClient{XmuxConn: browserClient}
+		xmuxClient.LeftRequests.Store(math.MaxInt32)
+		return browserClient, xmuxClient
+	}
 	c.access.Lock()
 	defer c.access.Unlock()
 	xmuxClient := c.xmuxManager.GetXmuxClient(ctx)

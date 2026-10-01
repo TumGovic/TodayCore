@@ -92,6 +92,7 @@ type ListenOptions struct {
 	UDPFragmentDefault   bool               `json:"-"`
 	UDPTimeout           UDPTimeoutCompat   `json:"udp_timeout,omitempty"`
 	Detour               string             `json:"detour,omitempty" reference:"inbound"`
+	FinalMask            *FinalMaskOptions  `json:"finalmask,omitempty"`
 
 	// Deprecated: removed
 	ProxyProtocol bool `json:"proxy_protocol,omitempty" schema:"omit"`

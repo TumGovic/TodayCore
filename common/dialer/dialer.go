@@ -62,6 +62,14 @@ func NewWithOptions(options Options) (N.Dialer, error) {
 			return nil, err
 		}
 	}
+	if dialOptions.FinalMask != nil {
+		// Below the resolver, so masks see the resolved destination like on
+		// Xray's system sockets.
+		dialer, err = newFinalMaskDialer(dialer, dialOptions.FinalMask)
+		if err != nil {
+			return nil, E.Cause(err, "finalmask")
+		}
+	}
 	if options.RemoteIsDomain && (!hasDetour || options.ResolverOnDetour || dialOptions.DomainResolver != nil && dialOptions.DomainResolver.Server != "") {
 		networkManager := service.FromContext[adapter.NetworkManager](options.Context)
 		dnsTransport := service.FromContext[adapter.DNSTransportManager](options.Context)

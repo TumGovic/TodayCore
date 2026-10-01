@@ -7,6 +7,7 @@ package vlessenc
 
 import (
 	"encoding/base64"
+	"strconv"
 	"strings"
 
 	E "github.com/sagernet/sing/common/exceptions"
@@ -75,6 +76,9 @@ func NewClient(encryption string) (*ClientInstance, error) {
 		}
 	}
 	rest := encryption[27+len(s[2]):]
+	if padding >= len(rest) {
+		return nil, E.New("missing VLESS encryption keys")
+	}
 	var paddingString string
 	if padding > 0 {
 		paddingString = rest[:padding-1]
@@ -104,4 +108,99 @@ func NewClient(encryption string) (*ClientInstance, error) {
 		return nil, E.Cause(err, "failed to use encryption")
 	}
 	return client, nil
+}
+
+// NewServer parses Xray's VLESS inbound "decryption" string and returns a
+// ready to use ServerInstance. Returns (nil, nil) when decryption is disabled
+// ("" or "none").
+//
+// Grammar (identical to Xray-core 26.9.30):
+//
+//	mlkem768x25519plus.<native|xorpub|random>.<seconds>[-<seconds>]s[.<padding>].<key>...
+//
+// where <seconds> is the 0-RTT ticket lifetime ("0s" disables 0-RTT; "600s"
+// or "300-600s") and every <key> is base64 raw-url encoded and is either 32
+// bytes (X25519 private key) or 64 bytes (ML-KEM-768 seed). Multiple keys
+// describe a relay chain, in order.
+func NewServer(decryption string) (*ServerInstance, error) {
+	switch decryption {
+	case "", "none":
+		return nil, nil
+	}
+
+	s := strings.Split(decryption, ".")
+	if len(s) < 4 || s[0] != "mlkem768x25519plus" {
+		return nil, E.New("unsupported VLESS decryption: ", decryption)
+	}
+
+	var xorMode uint32
+	switch s[1] {
+	case "native":
+		xorMode = 0
+	case "xorpub":
+		xorMode = 1
+	case "random":
+		xorMode = 2
+	default:
+		return nil, E.New("unsupported VLESS decryption XOR mode: ", s[1])
+	}
+
+	var secondsFrom, secondsTo int64
+	t := strings.SplitN(strings.TrimSuffix(s[2], "s"), "-", 2)
+	seconds, err := strconv.Atoi(t[0])
+	if err != nil {
+		return nil, E.New("invalid VLESS decryption ticket lifetime: ", s[2])
+	}
+	secondsFrom = int64(seconds)
+	if len(t) == 2 {
+		seconds, err = strconv.Atoi(t[1])
+		if err != nil {
+			return nil, E.New("invalid VLESS decryption ticket lifetime: ", s[2])
+		}
+		secondsTo = int64(seconds)
+	}
+
+	padding := 0
+	for _, r := range s[3:] {
+		if len(r) < 20 {
+			padding += len(r) + 1
+			continue
+		}
+		if b, _ := base64.RawURLEncoding.DecodeString(r); len(b) != 32 && len(b) != 64 {
+			return nil, E.New("invalid VLESS decryption key length: ", r)
+		}
+	}
+	rest := decryption[27+len(s[2]):]
+	if padding >= len(rest) {
+		return nil, E.New("missing VLESS encryption keys")
+	}
+	var paddingString string
+	if padding > 0 {
+		paddingString = rest[:padding-1]
+		rest = rest[padding:]
+	}
+
+	var nfsSKeysBytes [][]byte
+	for _, r := range strings.Split(rest, ".") {
+		if r == "" {
+			continue
+		}
+		b, err := base64.RawURLEncoding.DecodeString(r)
+		if err != nil {
+			return nil, E.Cause(err, "invalid VLESS decryption key: ", r)
+		}
+		if len(b) != 32 && len(b) != 64 {
+			return nil, E.New("invalid VLESS decryption key length: ", len(b))
+		}
+		nfsSKeysBytes = append(nfsSKeysBytes, b)
+	}
+	if len(nfsSKeysBytes) == 0 {
+		return nil, E.New("empty VLESS decryption keys")
+	}
+
+	server := new(ServerInstance)
+	if err := server.Init(nfsSKeysBytes, xorMode, secondsFrom, secondsTo, paddingString); err != nil {
+		return nil, E.Cause(err, "failed to use decryption")
+	}
+	return server, nil
 }

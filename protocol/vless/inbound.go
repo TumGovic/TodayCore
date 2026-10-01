@@ -15,6 +15,7 @@ import (
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing-box/transport/v2ray"
+	"github.com/sagernet/sing-box/transport/vlessenc"
 	"github.com/sagernet/sing-vmess/packetaddr"
 	"github.com/sagernet/sing-vmess/vless"
 	"github.com/sagernet/sing/common"
@@ -43,6 +44,7 @@ type Inbound struct {
 	service    *vless.Service[int]
 	tlsConfig  tls.ServerConfig
 	transport  adapter.V2RayServerTransport
+	decryption *vlessenc.ServerInstance
 	references []string
 }
 
@@ -68,6 +70,10 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		return it.Flow
 	}))
 	inbound.service = service
+	inbound.decryption, err = vlessenc.NewServer(options.Decryption)
+	if err != nil {
+		return nil, err
+	}
 	if options.TLS != nil {
 		inbound.tlsConfig, err = tls.NewServerWithOptions(tls.ServerOptions{
 			Context: ctx,
@@ -148,6 +154,7 @@ func (h *Inbound) Close() error {
 		h.listener,
 		h.tlsConfig,
 		h.transport,
+		common.PtrOrNil(h.decryption),
 	)
 }
 
@@ -160,6 +167,15 @@ func (h *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata ada
 			return
 		}
 		conn = tlsConn
+	}
+	if h.decryption != nil {
+		encryptedConn, err := h.decryption.Handshake(conn, nil)
+		if err != nil {
+			N.CloseOnHandshakeFailure(conn, onClose, err)
+			h.logger.ErrorContext(ctx, E.Cause(err, "process connection from ", metadata.Source, ": ML-KEM-768 handshake"))
+			return
+		}
+		conn = encryptedConn
 	}
 	err := h.service.NewConnection(adapter.WithContext(ctx, &metadata), conn, metadata.Source, onClose)
 	if err != nil {

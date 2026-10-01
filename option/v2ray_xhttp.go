@@ -71,35 +71,38 @@ type XHTTPMuxOptions struct {
 // V2RayXHTTPOptions maps to Xray's SplitHTTPConfig (XHTTP). Field names follow
 // Xray's JSON so that existing XHTTP client configs can be reused verbatim.
 type V2RayXHTTPOptions struct {
-	Host                 string                     `json:"host,omitempty"`
-	Path                 string                     `json:"path,omitempty"`
-	Mode                 string                     `json:"mode,omitempty" enum:"auto,packet-up,stream-up,stream-one"`
-	Headers              map[string]string          `json:"headers,omitempty"`
-	XPaddingBytes        XHTTPRange                 `json:"xPaddingBytes,omitempty"`
-	XPaddingObfsMode     bool                       `json:"xPaddingObfsMode,omitempty"`
-	XPaddingKey          string                     `json:"xPaddingKey,omitempty"`
-	XPaddingHeader       string                     `json:"xPaddingHeader,omitempty"`
-	XPaddingPlacement    string                     `json:"xPaddingPlacement,omitempty"`
-	XPaddingMethod       string                     `json:"xPaddingMethod,omitempty"`
-	UplinkHTTPMethod     string                     `json:"uplinkHTTPMethod,omitempty"`
-	SessionIDPlacement   string                     `json:"sessionIDPlacement,omitempty"`
-	SessionIDKey         string                     `json:"sessionIDKey,omitempty"`
-	SessionIDTable       string                     `json:"sessionIDTable,omitempty"`
-	SessionIDLength      XHTTPRange                 `json:"sessionIDLength,omitempty"`
-	SeqPlacement         string                     `json:"seqPlacement,omitempty"`
-	SeqKey               string                     `json:"seqKey,omitempty"`
-	UplinkDataPlacement  string                     `json:"uplinkDataPlacement,omitempty"`
-	UplinkDataKey        string                     `json:"uplinkDataKey,omitempty"`
-	UplinkChunkSize      XHTTPRange                 `json:"uplinkChunkSize,omitempty"`
-	NoGRPCHeader         bool                       `json:"noGRPCHeader,omitempty"`
-	NoSSEHeader          bool                       `json:"noSSEHeader,omitempty"`
-	ScMaxEachPostBytes   XHTTPRange                 `json:"scMaxEachPostBytes,omitempty"`
-	ScMinPostsIntervalMs XHTTPRange                 `json:"scMinPostsIntervalMs,omitempty"`
-	ScMaxBufferedPosts   int64                      `json:"scMaxBufferedPosts,omitempty"`
-	ScStreamUpServerSecs XHTTPRange                 `json:"scStreamUpServerSecs,omitempty"`
-	ServerMaxHeaderBytes int32                      `json:"serverMaxHeaderBytes,omitempty"`
-	Xmux                 *XHTTPMuxOptions           `json:"xmux,omitempty"`
-	DownloadSettings     *V2RayXHTTPDownloadOptions `json:"downloadSettings,omitempty"`
+	Host                 string            `json:"host,omitempty"`
+	Path                 string            `json:"path,omitempty"`
+	Mode                 string            `json:"mode,omitempty" enum:"auto,packet-up,stream-up,stream-one"`
+	Headers              map[string]string `json:"headers,omitempty"`
+	XPaddingBytes        XHTTPRange        `json:"xPaddingBytes,omitempty"`
+	XPaddingObfsMode     bool              `json:"xPaddingObfsMode,omitempty"`
+	XPaddingKey          string            `json:"xPaddingKey,omitempty"`
+	XPaddingHeader       string            `json:"xPaddingHeader,omitempty"`
+	XPaddingPlacement    string            `json:"xPaddingPlacement,omitempty"`
+	XPaddingMethod       string            `json:"xPaddingMethod,omitempty"`
+	UplinkHTTPMethod     string            `json:"uplinkHTTPMethod,omitempty"`
+	SessionIDPlacement   string            `json:"sessionIDPlacement,omitempty"`
+	SessionIDKey         string            `json:"sessionIDKey,omitempty"`
+	SessionIDTable       string            `json:"sessionIDTable,omitempty"`
+	SessionIDLength      XHTTPRange        `json:"sessionIDLength,omitempty"`
+	SeqPlacement         string            `json:"seqPlacement,omitempty"`
+	SeqKey               string            `json:"seqKey,omitempty"`
+	UplinkDataPlacement  string            `json:"uplinkDataPlacement,omitempty"`
+	UplinkDataKey        string            `json:"uplinkDataKey,omitempty"`
+	UplinkChunkSize      XHTTPRange        `json:"uplinkChunkSize,omitempty"`
+	NoGRPCHeader         bool              `json:"noGRPCHeader,omitempty"`
+	NoSSEHeader          bool              `json:"noSSEHeader,omitempty"`
+	ScMaxEachPostBytes   XHTTPRange        `json:"scMaxEachPostBytes,omitempty"`
+	ScMinPostsIntervalMs XHTTPRange        `json:"scMinPostsIntervalMs,omitempty"`
+	ScMaxBufferedPosts   int64             `json:"scMaxBufferedPosts,omitempty"`
+	ScStreamUpServerSecs XHTTPRange        `json:"scStreamUpServerSecs,omitempty"`
+	ServerMaxHeaderBytes int32             `json:"serverMaxHeaderBytes,omitempty"`
+	Xmux                 *XHTTPMuxOptions  `json:"xmux,omitempty"`
+	// BrowserDialer is the listen address of the browser dialer page, which
+	// replaces Xray's XRAY_BROWSER_DIALER environment variable.
+	BrowserDialer    string                     `json:"browserDialer,omitempty"`
+	DownloadSettings *V2RayXHTTPDownloadOptions `json:"downloadSettings,omitempty"`
 }
 
 // V2RayXHTTPDownloadOptions describes a separate downlink transport, as in

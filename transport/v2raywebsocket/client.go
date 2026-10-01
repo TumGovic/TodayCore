@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
+	"github.com/sagernet/sing-box/common/browserdialer"
 	"github.com/sagernet/sing-box/common/tls"
 	C "github.com/sagernet/sing-box/constant"
+	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
@@ -31,6 +33,7 @@ type Client struct {
 	headers             http.Header
 	maxEarlyData        uint32
 	earlyDataHeaderName string
+	browserDialer       *browserdialer.Dialer
 }
 
 func NewClient(ctx context.Context, dialer N.Dialer, serverAddr M.Socksaddr, options option.V2RayWebsocketOptions, tlsConfig tls.Config) (adapter.V2RayClientTransport, error) {
@@ -63,17 +66,31 @@ func NewClient(ctx context.Context, dialer N.Dialer, serverAddr M.Socksaddr, opt
 	if headers.Get("User-Agent") == "" {
 		headers.Set("User-Agent", "Go-http-client/1.1")
 	}
-	return &Client{
-		dialer,
-		serverAddr,
-		requestURL,
-		headers,
-		options.MaxEarlyData,
-		options.EarlyDataHeaderName,
-	}, nil
+	client := &Client{
+		dialer:              dialer,
+		serverAddr:          serverAddr,
+		requestURL:          requestURL,
+		headers:             headers,
+		maxEarlyData:        options.MaxEarlyData,
+		earlyDataHeaderName: options.EarlyDataHeaderName,
+	}
+	if options.BrowserDialer != "" {
+		// A page can only control Sec-WebSocket-Protocol, as in Xray.
+		if options.MaxEarlyData > 0 && options.EarlyDataHeaderName != "Sec-WebSocket-Protocol" {
+			return nil, E.New("browser_dialer only supports early data in the Sec-WebSocket-Protocol header")
+		}
+		client.browserDialer, err = browserdialer.Get(options.BrowserDialer, log.StdLogger())
+		if err != nil {
+			return nil, err
+		}
+	}
+	return client, nil
 }
 
 func (c *Client) DialContext(ctx context.Context) (net.Conn, error) {
+	if c.browserDialer != nil {
+		return c.dialBrowser(ctx)
+	}
 	conn, err := c.dialer.DialContext(ctx, N.NetworkTCP, c.serverAddr)
 	if err != nil {
 		return nil, err

@@ -25,8 +25,26 @@ func (l *Listener) ListenTCP() (net.Listener, error) {
 	if l.listenOptions.ProxyProtocol || l.listenOptions.ProxyProtocolAcceptNoHeader {
 		return nil, E.New("Proxy Protocol is deprecated and removed in sing-box 1.6.0")
 	}
-	var err error
 	bindAddr := M.SocksaddrFrom(l.listenOptions.Listen.Build(netip.AddrFrom4([4]byte{127, 0, 0, 1})), l.listenOptions.ListenPort)
+	mask, err := l.loadFinalMask()
+	if err != nil {
+		return nil, err
+	}
+	var tcpListener net.Listener
+	if mask.HasTCP() {
+		tcpListener, err = mask.Listen(l.ctx, bindAddr.TCPAddr())
+	} else {
+		tcpListener, err = l.listenTCPBase(bindAddr)
+	}
+	if err != nil {
+		return nil, err
+	}
+	l.logger.Info("tcp server started at ", tcpListener.Addr())
+	l.tcpListener = tcpListener
+	return tcpListener, err
+}
+
+func (l *Listener) listenTCPBase(bindAddr M.Socksaddr) (net.Listener, error) {
 	var listenConfig net.ListenConfig
 	if l.listenOptions.BindInterface != "" {
 		listenConfig.Control = control.Append(listenConfig.Control, control.BindToInterface(service.FromContext[adapter.NetworkManager](l.ctx).InterfaceFinder(), l.listenOptions.BindInterface, -1))
@@ -74,11 +92,6 @@ func (l *Listener) ListenTCP() (net.Listener, error) {
 			return listenConfig.Listen(l.ctx, M.NetworkFromNetAddr(N.NetworkTCP, bindAddr.Addr), bindAddr.String())
 		}
 	})
-	if err != nil {
-		return nil, err
-	}
-	l.logger.Info("tcp server started at ", tcpListener.Addr())
-	l.tcpListener = tcpListener
 	return tcpListener, err
 }
 

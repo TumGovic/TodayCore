@@ -102,6 +102,9 @@ type V2RayWebsocketOptions struct {
 	Headers             badoption.HTTPHeader `json:"headers,omitempty"`
 	MaxEarlyData        uint32               `json:"max_early_data,omitempty"`
 	EarlyDataHeaderName string               `json:"early_data_header_name,omitempty"`
+	// BrowserDialer is the listen address of Xray's browser dialer page
+	// (client only).
+	BrowserDialer string `json:"browser_dialer,omitempty"`
 }
 
 type V2RayQUICOptions struct{}

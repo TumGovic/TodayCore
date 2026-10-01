@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/sagernet/sing-box/common/browserheaders"
 	"github.com/sagernet/sing-box/option"
 	E "github.com/sagernet/sing/common/exceptions"
 
@@ -311,7 +312,7 @@ func (c *Config) GetRequestHeader() http.Header {
 	for k, v := range c.Headers {
 		header.Add(k, v)
 	}
-	TryDefaultHeadersWith(header, "fetch")
+	browserheaders.Apply(header, "fetch")
 	return header
 }
 

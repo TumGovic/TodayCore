@@ -11,6 +11,7 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/settings"
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing-box/transport/finalmask/bridge"
 	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
@@ -38,6 +39,10 @@ type Listener struct {
 	tcpListener          net.Listener
 	systemProxy          settings.SystemProxy
 	udpConn              *net.UDPConn
+	packetConn           net.PacketConn
+	udpListenConfig      net.ListenConfig
+	finalMask            *bridge.Listener
+	finalMaskLoaded      bool
 	udpAddr              M.Socksaddr
 	packetOutbound       chan *N.PacketBuffer
 	packetOutboundClosed chan struct{}
@@ -131,8 +136,27 @@ func (l *Listener) Close() error {
 	}
 	return E.Errors(err, common.Close(
 		l.tcpListener,
-		common.PtrOrNil(l.udpConn),
+		l.packetConn,
 	))
+}
+
+// loadFinalMask builds the FinalMask listener once. The base sockets it asks
+// for are created with this inbound's socket options.
+func (l *Listener) loadFinalMask() (*bridge.Listener, error) {
+	if l.finalMaskLoaded {
+		return l.finalMask, nil
+	}
+	mask, err := bridge.NewListener(l.listenOptions.FinalMask, func(ctx context.Context, addr net.Addr) (net.Listener, error) {
+		return l.listenTCPBase(M.SocksaddrFromNet(addr))
+	}, func(ctx context.Context, addr net.Addr) (net.PacketConn, error) {
+		return l.listenUDPBase(l.udpListenConfig, M.SocksaddrFromNet(addr))
+	})
+	if err != nil {
+		return nil, E.Cause(err, "finalmask")
+	}
+	l.finalMask = mask
+	l.finalMaskLoaded = true
+	return mask, nil
 }
 
 func (l *Listener) TCPListener() net.Listener {
